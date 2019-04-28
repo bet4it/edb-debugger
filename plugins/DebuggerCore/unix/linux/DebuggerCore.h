@@ -106,11 +106,18 @@ private:
 private:
 	using threads_type = QHash<edb::tid_t, std::shared_ptr<PlatformThread>>;
 
+public:
+  pid_t m_p_n_t;
+  edb::tid_t my_pid;
+  edb::tid_t my_tid;
+  int my_status;
+
 private:
 	// TODO(eteran): a few of these logically belong in PlatformProcess...
 	QList<qlonglong>          ignored_exceptions_;
 	threads_type              threads_;
 	QSet<edb::tid_t>          waited_threads_;
+	QSet<edb::tid_t>          stopped_threads_;
 	edb::tid_t                active_thread_;
 	std::shared_ptr<IProcess> process_;
 	std::size_t               pointer_size_ = sizeof(void*);

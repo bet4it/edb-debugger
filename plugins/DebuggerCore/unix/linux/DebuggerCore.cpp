@@ -484,7 +484,6 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handle_thread_create_event(edb::tid_t
 //------------------------------------------------------------------------------
 std::shared_ptr<IDebugEvent> DebuggerCore::handle_event(edb::tid_t tid, int status) {
 
-	// note that we have waited on this thread
 	waited_threads_.insert(tid);
 
 	// was it a thread exit event?
@@ -501,12 +500,21 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handle_event(edb::tid_t tid, int stat
 	}
 
     if(is_exit_trace_event(status)) {
-
+      
     }
 
 	// was it a thread create event?
 	if(is_clone_event(status)) {
-		return handle_thread_create_event(tid, status);
+    //TODO stop new thread
+		handle_thread_create_event(tid, status);
+    if(m_p_n_t > 0)
+      if (syscall(SYS_tgkill, process_->pid(), tid, SIGSTOP) == -1) {
+        const char *const error = strerror(errno);
+        errorMessage +=
+            tr("Failed to stop thread %1: %2\n").arg(tid).arg(error);
+      }
+
+    return nullptr;
 	}
 
 	// normal event
@@ -545,24 +553,49 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handle_event(edb::tid_t tid, int stat
 		it.value()->status_ = status;
 	}
 
-	stop_threads();
+  if (e->siginfo_.si_code == SI_TKILL && e->siginfo_.si_signo == SIGSTOP)
+    {
+      if(m_p_n_t > 0)
+        {
+        if (waited_threads_.size() == threads_.size())
+          {
+            m_p_n_t = -1;
+          e->pid_ = my_pid;
+        e->tid_ = my_tid;
+        e->status_ = my_status;
+        return e;
+        }
+          printf("Enter SIGSTOP!!\n");
+        // TODO Check all stop?
+        }
+      else
+        {
+          printf("Something  Error happened!!\n");
+        }
+      return nullptr;
+    }
+  m_p_n_t = tid;
+          stop_threads();
 
 	// Some breakpoint types result in SIGILL or SIGSEGV. We'll transform the
 	// event into breakpoint event if such a breakpoint has triggered.
-	if(it != threads_.end() && WIFSTOPPED(status)) {
-		const auto signo = WSTOPSIG(status);
-		if(signo == SIGILL || signo == SIGSEGV) {
-			// no need to peekuser for SIGILL, but have to for SIGSEGV
-			const auto address = signo == SIGILL ? edb::address_t::fromZeroExtended(e->siginfo_.si_addr)
-											   : (*it)->instruction_pointer();
+          if (it != threads_.end() && WIFSTOPPED(status)
+                                              && e->siginfo_.si_code != SI_TKILL) {
+            const auto signo = WSTOPSIG(status);
+            if (signo == SIGILL || signo == SIGSEGV) {
+              // no need to peekuser for SIGILL, but have to for SIGSEGV
+              const auto address =
+                  signo == SIGILL
+                      ? edb::address_t::fromZeroExtended(e->siginfo_.si_addr)
+                      : (*it)->instruction_pointer();
 
-			if(edb::v1::find_triggered_breakpoint(address)) {
-				e->status_ = SIGTRAP << 8 | 0x7f;
-				e->siginfo_.si_signo = SIGTRAP;
-				e->siginfo_.si_code  = TRAP_BRKPT;
-			}
-		}
-	}
+              if (edb::v1::find_triggered_breakpoint(address)) {
+                e->status_ = SIGTRAP << 8 | 0x7f;
+                e->siginfo_.si_signo = SIGTRAP;
+                e->siginfo_.si_code = TRAP_BRKPT;
+              }
+            }
+          }
 
 #if defined EDB_ARM32
 	if(it != threads_.end()) {
@@ -577,7 +610,13 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handle_event(edb::tid_t tid, int stat
 		}
 	}
 #endif
-	return e;
+        my_pid = e->pid_;
+        my_tid = e->tid_;
+        my_status = e->status_;
+        if (waited_threads_.size() == 1) {
+          return e;
+        }
+        return nullptr;
 }
 
 //------------------------------------------------------------------------------
@@ -599,22 +638,6 @@ Status DebuggerCore::stop_threads() {
 					if(syscall(SYS_tgkill, process_->pid(), thread->tid(), SIGSTOP) == -1) {
 						const char *const error = strerror(errno);
 						errorMessage += tr("Failed to stop thread %1: %2\n").arg(tid).arg(error);
-					}
-
-					int thread_status;
-					if(Posix::waitpid(thread->tid(), &thread_status, __WALL/* | WNOHANG*/) > 0) {
-						waited_threads_.insert(tid);
-						thread_ptr->status_ = thread_status;
-
-						// A thread could have exited between previous waitpid and the latest one...
-						if(WIFEXITED(thread_status)) {
-							handle_thread_exit(tid, thread_status);
-						}
-
-						// ..., otherwise it must have stopped.
-						else if(!WIFSTOPPED(thread_status) || WSTOPSIG(thread_status) != SIGSTOP) {
-							qWarning("stop_threads(): paused thread [%d] received an event besides SIGSTOP: status=0x%x", tid, thread_status);
-						}
 					}
 				}
 			}
