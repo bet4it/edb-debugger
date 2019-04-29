@@ -472,6 +472,13 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handle_thread_create_event(edb::tid_t
 		}
 
 		newThread->resume();
+
+		if(stopping_stage_) {
+			if(syscall(SYS_tgkill, process_->pid(), new_tid, SIGSTOP) == -1) {
+				const char *const strError = strerror(errno);
+				qWarning() << "Unable to kill thread" << tid << ": SYS_tgkill failed:" << strError;
+			}
+		}
 	}
 
 	ptrace_continue(tid, 0);
@@ -545,6 +552,18 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handle_event(edb::tid_t tid, int stat
 		it.value()->status_ = status;
 	}
 
+	if(stopping_stage_) {
+		if(waited_threads_.size() == threads_.size()) {
+			stopping_stage_ = false;
+			return pending_event_;
+		}
+		return nullptr;
+	} else if(e->siginfo_.si_code == SI_TKILL && e->siginfo_.si_signo == SIGSTOP) {
+		it.value()->resume();
+		return nullptr;
+	}
+	
+	stopping_stage_ = true;
 	stop_threads();
 
 	// Some breakpoint types result in SIGILL or SIGSEGV. We'll transform the
@@ -579,7 +598,12 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handle_event(edb::tid_t tid, int stat
 		}
 	}
 #endif
-	return e;
+	if(waited_threads_.size() ==threads_.size()) {
+		stopping_stage_ = false;
+		return e;
+	}
+	pending_event_ = e;;
+	return nullptr;
 }
 
 //------------------------------------------------------------------------------
@@ -601,22 +625,6 @@ Status DebuggerCore::stop_threads() {
 					if(syscall(SYS_tgkill, process_->pid(), thread->tid(), SIGSTOP) == -1) {
 						const char *const error = strerror(errno);
 						errorMessage += tr("Failed to stop thread %1: %2\n").arg(tid).arg(error);
-					}
-
-					int thread_status;
-					if(Posix::waitpid(thread->tid(), &thread_status, __WALL/* | WNOHANG*/) > 0) {
-						waited_threads_.insert(tid);
-						thread_ptr->status_ = thread_status;
-
-						// A thread could have exited between previous waitpid and the latest one...
-						if(WIFEXITED(thread_status)) {
-							handle_thread_exit(tid, thread_status);
-						}
-
-						// ..., otherwise it must have stopped.
-						else if(!WIFSTOPPED(thread_status) || WSTOPSIG(thread_status) != SIGSTOP) {
-							qWarning("stop_threads(): paused thread [%d] received an event besides SIGSTOP: status=0x%x", tid, thread_status);
-						}
 					}
 				}
 			}

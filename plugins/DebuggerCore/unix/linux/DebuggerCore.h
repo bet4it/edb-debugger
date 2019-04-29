@@ -21,6 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <QObject>
 #include "DebuggerCoreBase.h"
+#include "PlatformEvent.h"
 #include <QHash>
 #include <QSet>
 #include <csignal>
@@ -109,12 +110,14 @@ private:
 
 private:
 	// TODO(eteran): a few of these logically belong in PlatformProcess...
-	QList<qlonglong>          ignored_exceptions_;
-	threads_type              threads_;
-	QSet<edb::tid_t>          waited_threads_;
-	edb::tid_t                active_thread_;
-	std::shared_ptr<IProcess> process_;
-	std::size_t               pointer_size_ = sizeof(void*);
+	QList<qlonglong>               ignored_exceptions_;
+	threads_type                   threads_;
+	QSet<edb::tid_t>               waited_threads_;
+	edb::tid_t                     active_thread_;
+	std::shared_ptr<IProcess>      process_;
+	std::shared_ptr<PlatformEvent> pending_event_;
+	bool                           stopping_stage_ = false;
+	std::size_t                    pointer_size_ = sizeof(void*);
 #if defined(EDB_X86) || defined(EDB_X86_64)
 	const bool                edbIsIn64BitSegment;
 	const bool                osIs64Bit;
